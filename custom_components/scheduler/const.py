@@ -139,6 +139,21 @@ TIMESLOT_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_START): validate_time,
         vol.Optional(ATTR_STOP): validate_time,
+        vol.Optional(ATTR_WEEKDAYS): vol.All(
+            cv.ensure_list,
+            vol.Unique(),
+            vol.Length(min=1),
+            [
+                vol.In(
+                    WEEKDAYS
+                    + [
+                        DAY_TYPE_WORKDAY,
+                        DAY_TYPE_WEEKEND,
+                        DAY_TYPE_DAILY,
+                    ]
+                )
+            ],
+        ),
         vol.Optional(CONF_CONDITIONS): vol.All(
             cv.ensure_list, vol.Length(min=1), [CONDITION_SCHEMA]
         ),

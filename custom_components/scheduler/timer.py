@@ -102,7 +102,11 @@ class TimerHandler:
         self._start_date = data[const.ATTR_START_DATE]
         self._end_date = data[const.ATTR_END_DATE]
         self._timeslots = [
-            dict((k, slot[k]) for k in [const.ATTR_START, const.ATTR_STOP] if k in slot)
+            dict(
+                (k, slot[k])
+                for k in [const.ATTR_START, const.ATTR_STOP, const.ATTR_WEEKDAYS]
+                if k in slot
+            )
             for slot in data[const.ATTR_TIMESLOTS]
         ]
         await self.async_start_timer()
@@ -222,8 +226,8 @@ class TimerHandler:
     async def async_start_workday_tracker(self):
         """check for changes in the workday sensor"""
         if (
-            const.DAY_TYPE_WORKDAY in self._weekdays
-            or const.DAY_TYPE_WEEKEND in self._weekdays
+            self.has_day_type(const.DAY_TYPE_WORKDAY)
+            or self.has_day_type(const.DAY_TYPE_WEEKEND)
         ):
             # install tracker for updating timer when workday sensor changes
 
@@ -281,8 +285,22 @@ class TimerHandler:
             )
             await self.async_start_timer()
 
-    def day_in_weekdays(self, ts: datetime.datetime) -> bool:
+    def slot_weekdays(self, slot: dict) -> list:
+        """the days a timeslot applies to (its own list, or the ones of the schedule)"""
+        weekdays = slot.get(const.ATTR_WEEKDAYS)
+        return weekdays if weekdays else self._weekdays
+
+    def has_day_type(self, day_type: str) -> bool:
+        """whether the schedule or one of its timeslots uses a day type (workday/weekend)"""
+        if day_type in self._weekdays:
+            return True
+        return any(day_type in self.slot_weekdays(slot) for slot in self._timeslots)
+
+    def day_in_weekdays(
+        self, ts: datetime.datetime, weekdays: list = None
+    ) -> bool:
         """check if the day of a datetime object is in the allowed list of days"""
+        weekdays = self._weekdays if weekdays is None else weekdays
         day = WEEKDAYS[ts.weekday()]
         workday_sensor = self.hass.states.get(const.WORKDAY_ENTITY)
 
@@ -292,9 +310,9 @@ class TimerHandler:
             and is_same_day(ts, dt_util.as_local(dt_util.utcnow()))
         ):
             # state of workday sensor is used for evaluating workday vs weekend
-            if const.DAY_TYPE_WORKDAY in self._weekdays:
+            if const.DAY_TYPE_WORKDAY in weekdays:
                 return workday_sensor.state == STATE_ON
-            elif const.DAY_TYPE_WEEKEND in self._weekdays:
+            elif const.DAY_TYPE_WEEKEND in weekdays:
                 return workday_sensor.state == STATE_OFF
 
         if workday_sensor and ATTR_WORKDAYS in workday_sensor.attributes:
@@ -306,13 +324,13 @@ class TimerHandler:
             workday_list = WEEKDAYS[0:5]
             weekend_list = WEEKDAYS[5:7]
 
-        if const.DAY_TYPE_DAILY in self._weekdays or not len(self._weekdays):
+        if const.DAY_TYPE_DAILY in weekdays or not len(weekdays):
             return True
-        elif const.DAY_TYPE_WORKDAY in self._weekdays and day in workday_list:
+        elif const.DAY_TYPE_WORKDAY in weekdays and day in workday_list:
             return True
-        elif const.DAY_TYPE_WEEKEND in self._weekdays and day in weekend_list:
+        elif const.DAY_TYPE_WEEKEND in weekdays and day in weekend_list:
             return True
-        return day in self._weekdays
+        return day in weekdays
 
     def calculate_timestamp(
         self,
@@ -320,6 +338,7 @@ class TimerHandler:
         now: datetime.datetime = None,
         iteration: int = 0,
         reverse_direction: bool = False,
+        weekdays: list = None,
     ) -> datetime.datetime:
         """calculate the next occurence of a time string"""
         if time_str is None:
@@ -379,7 +398,7 @@ class TimerHandler:
 
         time_delta = datetime.timedelta(seconds=1)
 
-        if self.day_in_weekdays(ts) and (
+        if self.day_in_weekdays(ts, weekdays) and (
             (ts - now).total_seconds() > 0 or iteration > 0
         ):
 
@@ -413,7 +432,7 @@ class TimerHandler:
             )
             return None
         return self.calculate_timestamp(
-            time_str, next_day, iteration + 1, reverse_direction
+            time_str, next_day, iteration + 1, reverse_direction, weekdays
         )
 
     def next_timeslot(self):
@@ -421,7 +440,9 @@ class TimerHandler:
         now = dt_util.as_local(dt_util.utcnow())
         # calculate next start of all timeslots
         timestamps = [
-            self.calculate_timestamp(slot[const.ATTR_START], now)
+            self.calculate_timestamp(
+                slot[const.ATTR_START], now, weekdays=self.slot_weekdays(slot)
+            )
             for slot in self._timeslots
         ]
 
@@ -460,35 +481,41 @@ class TimerHandler:
             else:
                 return time_str
 
-        # calculate next stop of all timeslots
-        timestamps = []
-        for slot in self._timeslots:
+        # calculate next stop of all timeslots that apply to the current day
+        candidates = []
+        for idx, slot in enumerate(self._timeslots):
+            weekdays = self.slot_weekdays(slot)
+            if not self.day_in_weekdays(now, weekdays):
+                # timeslot does not run today, it has no active period
+                continue
             if slot[const.ATTR_STOP] is not None:
-                timestamps.append(
-                    self.calculate_timestamp(
-                        unwrap_end_of_day(slot[const.ATTR_STOP]), now
-                    )
+                ts = self.calculate_timestamp(
+                    unwrap_end_of_day(slot[const.ATTR_STOP]), now, weekdays=weekdays
                 )
             else:
-                ts = self.calculate_timestamp(slot[const.ATTR_START], now)
-                if ts is None:
-                    timestamps.append(None)
-                else:
+                ts = self.calculate_timestamp(
+                    slot[const.ATTR_START], now, weekdays=weekdays
+                )
+                if ts is not None:
                     ts = ts + datetime.timedelta(minutes=1)
-                    timestamps.append(
-                        self.calculate_timestamp(ts.strftime("%H:%M:%S"), now)
+                    ts = self.calculate_timestamp(
+                        ts.strftime("%H:%M:%S"), now, weekdays=weekdays
                     )
+            if ts is None:
+                continue
+            candidates.append((idx, ts))
+
+        if not candidates:
+            return (None, None)
 
         # calculate timeslot that will end soonest
-        remaining = [
-            (ts - now).total_seconds() if ts is not None else now.timestamp()
-            for ts in timestamps
-        ]
-        (next_slot_end, val) = sorted(
-            enumerate(remaining), key=lambda i: (i[1] < 0, abs(i[1]))
+        (next_slot_end, stop) = sorted(
+            candidates,
+            key=lambda item: (
+                (item[1] - now).total_seconds() < 0,
+                abs((item[1] - now).total_seconds()),
+            ),
         )[0]
-
-        stop = timestamps[next_slot_end]
         if stop is not None:
             # calculate last start of timeslot that will end soonest
             if (stop - now).total_seconds() < 0:
@@ -498,6 +525,7 @@ class TimerHandler:
             start = self.calculate_timestamp(
                 self._timeslots[next_slot_end][const.ATTR_START],
                 stop - datetime.timedelta(days=1),
+                weekdays=self.slot_weekdays(self._timeslots[next_slot_end]),
             )
 
             if start is not None:

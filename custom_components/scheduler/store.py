@@ -47,6 +47,7 @@ class TimeslotEntry:
 
     start = attr.ib(type=str, default=None)
     stop = attr.ib(type=str, default=None)
+    weekdays = attr.ib(type=list, default=None)
     conditions = attr.ib(type=[ConditionEntry], default=[])
     condition_type = attr.ib(type=str, default=None)
     track_conditions = attr.ib(type=bool, default=False)

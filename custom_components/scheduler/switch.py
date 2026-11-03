@@ -250,7 +250,13 @@ class ScheduleEntity(ToggleEntity):
                     ts_shutdown = self.coordinator.time_shutdown
                     now = dt_util.as_local(dt_util.utcnow())
                     start_time = self.schedule[const.ATTR_TIMESLOTS][self._current_slot][const.ATTR_START]
-                    start_of_timeslot = self._timer_handler.calculate_timestamp(start_time, ts_shutdown)
+                    start_of_timeslot = self._timer_handler.calculate_timestamp(
+                        start_time,
+                        ts_shutdown,
+                        weekdays=self._timer_handler.slot_weekdays(
+                            self.schedule[const.ATTR_TIMESLOTS][self._current_slot]
+                        ),
+                    )
                     if start_of_timeslot > now:
                         skip_initial_execution = True
 
@@ -411,6 +417,16 @@ class ScheduleEntity(ToggleEntity):
         return timeslots
 
     @property
+    def timeslot_weekdays(self):
+        """per-timeslot restriction, aligned with the 'timeslots' attribute"""
+        if not self.schedule:
+            return None
+        return [
+            timeslot.get(const.ATTR_WEEKDAYS)
+            for timeslot in self.schedule[const.ATTR_TIMESLOTS]
+        ]
+
+    @property
     def tags(self):
         return self._tags
 
@@ -420,6 +436,7 @@ class ScheduleEntity(ToggleEntity):
         output = {
             "weekdays": self.weekdays,
             "timeslots": self.timeslots,
+            "timeslot_weekdays": self.timeslot_weekdays,
             "entities": self.entities,
             "actions": self.actions,
             "current_slot": self._current_slot,
