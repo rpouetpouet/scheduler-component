@@ -237,6 +237,7 @@ class ScheduleStorage:
                 timeslot = {
                     const.ATTR_START: slot.start,
                     const.ATTR_STOP: slot.stop,
+                    const.ATTR_WEEKDAYS: slot.weekdays,
                     CONF_CONDITIONS: [],
                     const.ATTR_CONDITION_TYPE: slot.condition_type,
                     const.ATTR_TRACK_CONDITIONS: slot.track_conditions,
