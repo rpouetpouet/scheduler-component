@@ -321,10 +321,16 @@ class SchedulerCoordinator(DataUpdateCoordinator):
             return
         item = self.async_get_schedule(schedule_id)
 
-        if ATTR_NAME in data and item[ATTR_NAME] != data[ATTR_NAME]:
-            data[ATTR_NAME] = data[ATTR_NAME].strip()
-        elif ATTR_NAME in data:
-            del data[ATTR_NAME]
+        if ATTR_NAME in data:
+            # Un nom vide ou identique n'est PAS un renommage : sans ce garde,
+            # `data[ATTR_NAME].strip()` levait une AttributeError quand la carte
+            # envoyait `null` (champ vide), et un renommage vers "" detruisait
+            # l'entite (elle perdait son nom, donc son entity_id).
+            nouveau_nom = (data[ATTR_NAME] or "").strip()
+            if not nouveau_nom or nouveau_nom == item[ATTR_NAME]:
+                del data[ATTR_NAME]
+            else:
+                data[ATTR_NAME] = nouveau_nom
 
         tags_updated = False
         tags = None
@@ -336,14 +342,17 @@ class SchedulerCoordinator(DataUpdateCoordinator):
         entry = self.store.async_update_schedule(schedule_id, data)
         if tags_updated:
             self.async_assign_tags_to_schedule(schedule_id, tags)
-        entity = self.hass.data[const.DOMAIN]["schedules"][schedule_id]
-        if ATTR_NAME in data:
-            # if the name has been changed, the entity ID must change hence the entity should be destroyed
-            entity_registry = get_entity_registry(self.hass)
-            entity_registry.async_remove(entity.entity_id)
-            async_dispatcher_send(self.hass, const.EVENT_ITEM_CREATED, entry)
-        else:
-            async_dispatcher_send(self.hass, const.EVENT_ITEM_UPDATED, schedule_id)
+        # Un renommage NE DETRUIT PLUS l'entite.
+        # Avant : l'entree etait retiree du registre, puis EVENT_ITEM_CREATED
+        # etait emis pour en recreer une — sauf que `async_add_entity` refuse de
+        # recreer un `schedule_id` deja present dans `hass.data[DOMAIN]
+        # ["schedules"]`, et l'objet Python y restait. Le schedule perdait donc
+        # son entite jusqu'au redemarrage de HA : invisible, impossible a
+        # afficher dans la carte (cas reel : switch.schedule_filles).
+        # L'entity_id est de plus reference par les cartes et les tableaux de
+        # bord, il doit rester stable. L'entite lit son nom dans le store
+        # (`name` est une propriete) : EVENT_ITEM_UPDATED suffit a rafraichir.
+        async_dispatcher_send(self.hass, const.EVENT_ITEM_UPDATED, schedule_id)
 
     @callback
     def async_delete_schedule(self, schedule_id: str):
